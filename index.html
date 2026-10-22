@@ -1,0 +1,102 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <meta name="theme-color" content="#14292d">
+    <title>AfterMeeting — keep the promise in view</title>
+    <link rel="stylesheet" href="/styles.css">
+    <script src="/app.js" defer></script>
+  </head>
+  <body>
+    <a class="skip-link" href="#main">Skip to the review</a>
+    <header class="masthead">
+      <a class="wordmark" href="/" aria-label="AfterMeeting home">
+        <span class="wordmark-mark" aria-hidden="true">A</span>
+        <span>AfterMeeting</span>
+      </a>
+      <span class="local-status" id="connection-status" role="status">Checking this computer…</span>
+    </header>
+
+    <main id="main">
+      <section class="intro" aria-labelledby="page-title">
+        <div class="intro-copy">
+          <p class="kicker">A clear next step from one conversation</p>
+          <h1 id="page-title">Keep the promise<br>in view.</h1>
+          <p class="intro-lede">Choose a completed Bee conversation. Review each suggested next step against the words Bee captured, then carry only what you approve into a small handoff note.</p>
+          <button class="primary-button" id="load-conversations" type="button">Find Bee conversations</button>
+          <p class="setup-note" id="setup-note">AfterMeeting reads through the official Bee CLI. It does not sign in for you or change Bee data.</p>
+        </div>
+        <aside class="receipt-mark" aria-label="How the review works">
+          <div class="receipt-mark-top"><span class="receipt-dot"></span><span>One recording</span></div>
+          <div class="receipt-quote" aria-hidden="true">“</div>
+          <p>Exact transcript<br>beside the action</p>
+          <div class="receipt-rule"></div>
+          <span class="receipt-foot">YOU DECIDE WHAT CARRIES FORWARD</span>
+        </aside>
+      </section>
+
+      <p class="screen-message" id="screen-message" role="status" aria-live="polite">Bee data has not been requested yet.</p>
+
+      <section class="library-section" id="library-section" aria-labelledby="library-title" hidden>
+        <div class="section-heading">
+          <div>
+            <p class="kicker">Your recent library</p>
+            <h2 id="library-title">Choose one recording</h2>
+          </div>
+          <button class="quiet-button" id="refresh-conversations" type="button">Refresh list</button>
+        </div>
+        <div class="record-list" id="record-list"></div>
+      </section>
+
+      <section class="review-section" id="review-section" aria-labelledby="review-title" hidden>
+        <div class="section-heading review-heading">
+          <div>
+            <p class="kicker">The conversation receipt</p>
+            <h2 id="review-title">Review what you heard</h2>
+          </div>
+          <button class="quiet-button" id="back-to-list" type="button">Choose another</button>
+        </div>
+        <div class="record-meta" id="record-meta"></div>
+        <div class="review-grid">
+          <section class="summary-panel" aria-labelledby="summary-title">
+            <p class="panel-label" id="summary-title">Bee's summary</p>
+            <p class="summary-text" id="summary-text">Bee did not provide a summary for this recording.</p>
+            <div class="source-hash">
+              <span>Source response hash</span>
+              <code id="source-hash"></code>
+            </div>
+            <p class="asr-note">Transcript text comes from automatic speech recognition. Check the words before you share them.</p>
+          </section>
+
+          <section class="actions-panel" aria-labelledby="actions-title">
+            <div class="actions-heading">
+              <div>
+                <p class="panel-label">Your review</p>
+                <h3 id="actions-title">Possible next steps</h3>
+              </div>
+              <span class="count-chip" id="candidate-count">0 found</span>
+            </div>
+            <p class="action-intro">Suggestions keep the original sentence as evidence. Edit the task in your own words, then mark only the steps you want in your handoff.</p>
+            <div class="candidate-list" id="candidate-list"></div>
+            <p class="empty-candidates" id="empty-candidates" hidden>No clear commitment or next-step phrase surfaced. You can still review the transcript and write your own note elsewhere.</p>
+            <button class="primary-button export-button" id="download-brief" type="button">Download reviewed handoff</button>
+            <p class="download-note">The note is created only when you download it. This page does not save your transcript.</p>
+          </section>
+        </div>
+
+        <details class="transcript-details">
+          <summary>Read the full Bee transcript</summary>
+          <p class="asr-note">Quotes below are the text returned by Bee, not a verified audio transcript.</p>
+          <ol class="transcript-list" id="transcript-list"></ol>
+        </details>
+        <p class="provenance-note"><strong>Capture origin:</strong> Bee's CLI does not attest that a recording came from Apple Watch. For a Bee demonstration, confirm in the Bee app that this is your real Watch capture and that Bee finished processing it.</p>
+      </section>
+    </main>
+
+    <footer class="page-footer">
+      <span>Read-only by design</span>
+      <span>Local review · no transcript storage</span>
+    </footer>
+  </body>
+</html>

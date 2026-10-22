@@ -1,0 +1,55 @@
+{
+  "fixture_notice": "SYNTHETIC TEST DATA ONLY — never represents a real Bee or Apple Watch capture.",
+  "conversation": {
+    "id": 900001,
+    "start_time": 1792612800000,
+    "end_time": 1792613100000,
+    "created_at": 1792612800000,
+    "updated_at": 1792613100000,
+    "device_type": "fixture-only",
+    "summary": "Synthetic planning recap for adapter and quote validation.",
+    "short_summary": "Fixture-only planning recap.",
+    "state": "COMPLETED",
+    "transcriptions": [
+      {
+        "id": 900101,
+        "realtime": false,
+        "utterances": [
+          {
+            "id": 900201,
+            "realtime": false,
+            "start": 0,
+            "end": 4,
+            "spoken_at": 1792612800000,
+            "text": "I'll send the revised agenda by Friday.",
+            "speaker": "SPEAKER_1",
+            "created_at": 1792612800000
+          },
+          {
+            "id": 900202,
+            "realtime": false,
+            "start": 5,
+            "end": 10,
+            "spoken_at": 1792612810000,
+            "text": "We should revisit the draft after the review.",
+            "speaker": "SPEAKER_2",
+            "created_at": 1792612810000
+          },
+          {
+            "id": 900203,
+            "realtime": false,
+            "start": 11,
+            "end": 12,
+            "spoken_at": 1792612820000,
+            "text": "Thanks.",
+            "speaker": null,
+            "created_at": 1792612820000
+          }
+        ]
+      }
+    ],
+    "suggested_links": [],
+    "primary_location": null
+  },
+  "timezone": "America/Chicago"
+}
