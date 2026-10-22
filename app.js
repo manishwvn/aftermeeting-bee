@@ -12,6 +12,8 @@ const transcriptList = document.querySelector("#transcript-list");
 const downloadButton = document.querySelector("#download-brief");
 let selectedConversation = null;
 let candidateChoices = new Map();
+let viewRequestVersion = 0;
+let pendingDetailButton = null;
 
 function setMessage(message, tone = "plain") {
   messageNode.textContent = message;
@@ -89,11 +91,13 @@ function makeRecordButton(record) {
 }
 
 async function loadConversations() {
+  const requestVersion = beginViewRequest();
   loadButton.disabled = true;
   refreshButton.disabled = true;
   setMessage("Reading a short list of Bee conversations…");
   try {
     const data = await postJson("/api/conversations", {});
+    if (requestVersion !== viewRequestVersion) return;
     const records = [...data.conversations].sort((left, right) => right.start_time - left.start_time);
     recordList.replaceChildren();
     for (const record of records) recordList.append(makeRecordButton(record));
@@ -108,10 +112,13 @@ async function loadConversations() {
       recordList.append(empty);
     }
   } catch (error) {
+    if (requestVersion !== viewRequestVersion) return;
     setMessage(error.message, "error");
   } finally {
-    loadButton.disabled = false;
-    refreshButton.disabled = false;
+    if (requestVersion === viewRequestVersion) {
+      loadButton.disabled = false;
+      refreshButton.disabled = false;
+    }
   }
 }
 
@@ -225,15 +232,42 @@ function renderConversation(conversation) {
 }
 
 async function loadConversation(id, button) {
+  const requestVersion = beginViewRequest();
+  pendingDetailButton = button || null;
   if (button) button.disabled = true;
   setMessage(`Reading Bee conversation ${id}…`);
   try {
     const conversation = await postJson("/api/conversation", { id });
+    if (requestVersion !== viewRequestVersion) return;
+    if (button) button.disabled = false;
+    pendingDetailButton = null;
     renderConversation(conversation);
   } catch (error) {
-    setMessage(error.message, "error");
+    if (requestVersion !== viewRequestVersion) return;
     if (button) button.disabled = false;
+    pendingDetailButton = null;
+    setMessage(error.message, "error");
   }
+}
+
+function releasePendingDetailButton() {
+  if (pendingDetailButton) pendingDetailButton.disabled = false;
+  pendingDetailButton = null;
+}
+
+function beginViewRequest() {
+  viewRequestVersion += 1;
+  releasePendingDetailButton();
+  loadButton.disabled = false;
+  refreshButton.disabled = false;
+  return viewRequestVersion;
+}
+
+function invalidateViewRequest() {
+  viewRequestVersion += 1;
+  releasePendingDetailButton();
+  loadButton.disabled = false;
+  refreshButton.disabled = false;
 }
 
 function downloadBrief() {
@@ -280,7 +314,9 @@ function downloadBrief() {
 loadButton.addEventListener("click", loadConversations);
 refreshButton.addEventListener("click", loadConversations);
 document.querySelector("#back-to-list").addEventListener("click", () => {
+  invalidateViewRequest();
   selectedConversation = null;
+  candidateChoices = new Map();
   reviewSection.hidden = true;
   librarySection.hidden = false;
   setMessage("Choose a different Bee conversation.");
