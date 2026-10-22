@@ -239,17 +239,31 @@ class LocalServerTests(unittest.TestCase):
         self.server.server_close()
         self.thread.join(timeout=2)
 
-    def request(self, path: str, *, host: str | None = None, origin: str | None = None, body: str = "{}") -> tuple[int, dict[str, Any]]:
+    def request(
+        self,
+        path: str,
+        *,
+        host: str | None = None,
+        origin: str | None = None,
+        include_origin: bool = True,
+        fetch_site: str | None = "same-origin",
+        content_type: str = "application/json",
+        body: str = "{}",
+    ) -> tuple[int, dict[str, Any]]:
         connection = http.client.HTTPConnection("127.0.0.1", self.port, timeout=3)
+        headers = {
+            "Host": host or f"127.0.0.1:{self.port}",
+            "Content-Type": content_type,
+        }
+        if include_origin:
+            headers["Origin"] = origin or self.origin
+        if fetch_site is not None:
+            headers["Sec-Fetch-Site"] = fetch_site
         connection.request(
             "POST",
             path,
             body=body,
-            headers={
-                "Host": host or f"127.0.0.1:{self.port}",
-                "Origin": origin or self.origin,
-                "Content-Type": "application/json",
-            },
+            headers=headers,
         )
         response = connection.getresponse()
         result = json.loads(response.read().decode("utf-8"))
@@ -257,11 +271,25 @@ class LocalServerTests(unittest.TestCase):
         connection.close()
         return status, result
 
+    def get(self, path: str, *, host: str | None = None) -> tuple[int, bytes]:
+        connection = http.client.HTTPConnection("127.0.0.1", self.port, timeout=3)
+        connection.request("GET", path, headers={"Host": host or f"127.0.0.1:{self.port}"})
+        response = connection.getresponse()
+        body = response.read()
+        status = response.status
+        connection.close()
+        return status, body
+
     def test_origin_and_host_guards_precede_bee_reads(self) -> None:
         wrong_host_status, _ = self.request("/api/conversations", host="outside.example")
         wrong_origin_status, _ = self.request("/api/conversations", origin="https://outside.example")
         self.assertEqual((wrong_host_status, wrong_origin_status), (421, 403))
         self.assertEqual(self.bee.calls, [])
+
+    def test_static_get_without_origin_serves_the_local_page(self) -> None:
+        status, body = self.get("/")
+        self.assertEqual(status, 200)
+        self.assertIn(b"AfterMeeting", body)
 
     def test_one_conversation_flows_to_a_quote_linked_review_payload(self) -> None:
         list_status, listing = self.request("/api/conversations")
@@ -270,13 +298,36 @@ class LocalServerTests(unittest.TestCase):
         detail_status, detail = self.request("/api/conversation", body=json.dumps({"id": FIXTURE_ID}))
         self.assertEqual(detail_status, 200)
         self.assertEqual(detail["data"]["id"], FIXTURE_ID)
-        self.assertEqual(detail["data"]["candidates"][0]["quote"], FIXTURE["transcriptions"][0]["utterances"][0]["text"])
+        candidate = detail["data"]["candidates"][0]
+        source_utterance = FIXTURE["transcriptions"][0]["utterances"][0]
+        self.assertEqual(candidate["action"], source_utterance["text"])
+        self.assertEqual(candidate["quote"], source_utterance["text"])
+        self.assertEqual(candidate["utterance_id"], source_utterance["id"])
+        self.assertEqual(candidate["speaker"], source_utterance["speaker"])
         self.assertEqual(self.bee.calls, [("list", None), ("get", FIXTURE_ID)])
 
     def test_browser_cannot_supply_a_command_or_invalid_identifier(self) -> None:
         status, result = self.request("/api/conversation", body=json.dumps({"id": "2; whoami"}))
         self.assertEqual(status, 400)
         self.assertEqual(result["error"]["code"], "invalid_conversation_id")
+        self.assertEqual(self.bee.calls, [])
+
+    def test_request_guards_reject_cross_site_and_invalid_json_before_bee_reads(self) -> None:
+        cases = [
+            (self.request("/api/conversations", fetch_site="cross-site"), 403, "same_origin_required"),
+            (self.request("/api/conversations", include_origin=False), 403, "same_origin_required"),
+            (self.request("/api/conversations", content_type="text/plain"), 415, "json_required"),
+            (self.request("/api/conversations", body="{"), 400, "invalid_request"),
+            (
+                self.request("/api/conversations", body=" " * (app.MAX_BODY_BYTES + 1)),
+                413,
+                "request_too_large",
+            ),
+        ]
+        for (status, result), expected_status, expected_code in cases:
+            with self.subTest(code=expected_code):
+                self.assertEqual(status, expected_status)
+                self.assertEqual(result["error"]["code"], expected_code)
         self.assertEqual(self.bee.calls, [])
 
 
