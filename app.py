@@ -5,9 +5,12 @@ from __future__ import annotations
 import hashlib
 import json
 import math
+import os
 import re
+import selectors
 import shutil
 import subprocess
+import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from typing import Any, Callable
@@ -17,11 +20,15 @@ from urllib.parse import urlsplit
 APP_DIR = Path(__file__).resolve().parent
 MAX_BODY_BYTES = 4_096
 MAX_OUTPUT_BYTES = 1_500_000
+MAX_STDERR_BYTES = 64_000
+OUTPUT_READ_CHUNK_BYTES = 64 * 1_024
 MAX_CONVERSATIONS = 10
 MAX_TRANSCRIPTIONS = 200
 MAX_UTTERANCES = 3_000
 MAX_UTTERANCE_CHARS = 10_000
 CLI_TIMEOUT_SECONDS = 20
+CLI_TERMINATE_GRACE_SECONDS = 0.25
+CLI_KILL_WAIT_SECONDS = 1.0
 
 
 class AppError(Exception):
@@ -42,6 +49,31 @@ def _positive_id(value: Any) -> int:
     if type(value) is not int or value <= 0:
         raise AppError(400, "invalid_conversation_id", "Choose a valid Bee conversation ID.")
     return value
+
+
+def _stop_owned_child(child: subprocess.Popen[bytes]) -> None:
+    """Stop and reap only the CLI process created for this request."""
+    if child.poll() is not None:
+        return
+    try:
+        child.terminate()
+    except OSError:
+        pass
+    try:
+        child.wait(timeout=CLI_TERMINATE_GRACE_SECONDS)
+        return
+    except subprocess.TimeoutExpired:
+        pass
+    if child.poll() is None:
+        try:
+            child.kill()
+        except OSError:
+            pass
+    try:
+        child.wait(timeout=CLI_KILL_WAIT_SECONDS)
+    except subprocess.TimeoutExpired:
+        # Keep the request bounded even if the OS cannot reap a killed child promptly.
+        pass
 
 
 def _decode_object(raw: str) -> dict[str, Any]:
@@ -241,6 +273,7 @@ def extract_candidates(conversation: dict[str, Any]) -> list[dict[str, Any]]:
                     "speaker": utterance["speaker"],
                     "spoken_at": utterance["spoken_at"],
                     "utterance_id": utterance["id"],
+                    "transcript_line": index + 1,
                 }
             )
     return candidates
@@ -260,15 +293,15 @@ class BeeCLI:
         self,
         *,
         executable: str | None = None,
-        runner: Callable[..., subprocess.CompletedProcess[str]] | None = None,
+        popen_factory: Callable[..., subprocess.Popen[bytes]] | None = None,
     ) -> None:
         # Production resolves the project-local CLI first, then the documented `bee` executable from PATH.
-        # Tests inject a runner and fixture executable; HTTP input cannot set either.
-        if runner is not None:
+        # Tests inject an owned child process factory; HTTP input cannot set either.
+        if popen_factory is not None:
             self._executable = executable
         else:
             self._executable = resolve_bee_cli()
-        self._runner = runner or subprocess.run
+        self._popen = popen_factory or subprocess.Popen
 
     def _read(self, args: list[str]) -> tuple[dict[str, Any], str]:
         if not self._executable:
@@ -278,36 +311,90 @@ class BeeCLI:
                 "The official Bee CLI was not found on PATH. Install it and restart AfterMeeting.",
             )
         try:
-            result = self._runner(
+            child = self._popen(
                 [self._executable, *args],
                 shell=False,
                 stdin=subprocess.DEVNULL,
                 stdout=subprocess.PIPE,
                 stderr=subprocess.PIPE,
-                text=True,
-                encoding="utf-8",
-                timeout=CLI_TIMEOUT_SECONDS,
                 cwd=str(APP_DIR),
-                check=False,
+                close_fds=True,
             )
-        except subprocess.TimeoutExpired:
-            raise AppError(504, "bee_cli_timeout", "Bee took too long to return this conversation. Try again.") from None
         except OSError:
             raise AppError(503, "bee_cli_unavailable", "AfterMeeting could not start the official Bee CLI.") from None
 
-        raw = result.stdout or ""
-        if len(raw.encode("utf-8")) > MAX_OUTPUT_BYTES:
-            raise AppError(413, "bee_response_too_large", "This Bee response is too large to review here.")
-        if result.returncode != 0:
-            detail = (result.stderr or "").casefold()
-            if "not logged in" in detail or "unauthorized" in detail or "401" in detail:
-                raise AppError(
-                    401,
-                    "bee_login_required",
-                    "Bee did not authorize the request. Complete bee login in Terminal, then try again.",
-                )
-            raise AppError(502, "bee_cli_failed", "Bee could not return that data. Check Bee access and try again.")
-        return _decode_object(raw), raw
+        assert child.stdout is not None and child.stderr is not None
+        selector = selectors.DefaultSelector()
+        streams = {"stdout": child.stdout, "stderr": child.stderr}
+        captured = {"stdout": bytearray(), "stderr": bytearray()}
+        limits = {"stdout": MAX_OUTPUT_BYTES, "stderr": MAX_STDERR_BYTES}
+        deadline = time.monotonic() + CLI_TIMEOUT_SECONDS
+        timed_out = False
+        oversized = False
+
+        try:
+            for name, stream in streams.items():
+                os.set_blocking(stream.fileno(), False)
+                selector.register(stream, selectors.EVENT_READ, name)
+
+            while selector.get_map():
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    timed_out = True
+                    break
+                for key, _events in selector.select(min(remaining, 0.1)):
+                    try:
+                        chunk = os.read(key.fd, OUTPUT_READ_CHUNK_BYTES)
+                    except BlockingIOError:
+                        continue
+                    if not chunk:
+                        selector.unregister(key.fileobj)
+                        key.fileobj.close()
+                        continue
+                    destination = captured[key.data]
+                    if len(destination) + len(chunk) > limits[key.data]:
+                        oversized = True
+                        break
+                    destination.extend(chunk)
+                if oversized:
+                    break
+
+            if timed_out:
+                _stop_owned_child(child)
+                raise AppError(504, "bee_cli_timeout", "Bee took too long to return this conversation. Try again.")
+            if oversized:
+                _stop_owned_child(child)
+                raise AppError(413, "bee_response_too_large", "This Bee response is too large to review here.")
+
+            try:
+                child.wait(timeout=max(0.0, deadline - time.monotonic()))
+            except subprocess.TimeoutExpired:
+                _stop_owned_child(child)
+                raise AppError(504, "bee_cli_timeout", "Bee took too long to return this conversation. Try again.") from None
+
+            try:
+                raw = captured["stdout"].decode("utf-8")
+                detail = captured["stderr"].decode("utf-8", errors="replace").casefold()
+            except UnicodeDecodeError:
+                raise AppError(502, "bee_response_invalid", "Bee returned data the app could not read.") from None
+
+            if child.returncode != 0:
+                if "not logged in" in detail or "unauthorized" in detail or "401" in detail:
+                    raise AppError(
+                        401,
+                        "bee_login_required",
+                        "Bee did not authorize the request. Complete bee login in Terminal, then try again.",
+                    )
+                raise AppError(502, "bee_cli_failed", "Bee could not return that data. Check Bee access and try again.")
+            return _decode_object(raw), raw
+        except OSError:
+            _stop_owned_child(child)
+            raise AppError(502, "bee_cli_failed", "Bee could not return that data. Check Bee access and try again.") from None
+        finally:
+            selector.close()
+            for stream in streams.values():
+                if not stream.closed:
+                    stream.close()
 
     def list_conversations(self) -> dict[str, Any]:
         payload, _raw = self._read(["conversations", "list", "--limit", str(MAX_CONVERSATIONS), "--json"])

@@ -6,15 +6,17 @@ The app is a small local preparation slice. It does not prove this account's Bee
 
 ## Run locally
 
-Use Python 3.11 or newer. After the official Bee CLI is installed and authenticated by the account owner, start the app:
+Use Python 3.11 or newer. This workspace has an ignored, project-local Bee CLI 0.7.3 build for macOS ARM64 at `.local/bee-cli/bin/bee`. Its 21 MB official release archive matched the published SHA-256 `a1eaf68d41454980ded5381a45a3fce1ae2963f46694ac20f4c3ce22bbe34048`; its version/help output and v0.7.3 source contract were checked without account access. The binary is not committed and is specific to this machine.
+
+From this directory, start the app with:
 
 ```text
-python3 app.py
+PATH="$PWD/.local/bee-cli/bin:$PATH" python3 app.py
 ```
 
-Open the printed `http://127.0.0.1:8765` address. If Bee is not signed in, complete `bee login` in Terminal yourself, approve Bee's own authentication flow, and return to the app. After a real Watch recording, wait for Bee to finish processing it, then choose that record and check its timestamp, summary, and source words.
+Open the printed `http://127.0.0.1:8765` address. If the CLI is not connected to the existing Bee account, run `bee login` yourself in Terminal and complete Bee's own consent flow; do not paste account tokens into this app or chat. After a real Watch recording, wait for Bee to finish processing it, then choose that record and check its timestamp, summary, and source words.
 
-The app can use a project-local official CLI at `.local/bee-cli/node_modules/.bin/bee`, or an official `bee` executable already on `PATH`. To prepare a project-local CLI later, use the current Bee installation instructions and place the package under `.local/bee-cli`; `.local/` is ignored by Git. The October 22, 2026 public npm metadata listed `@beeai/cli` 0.9.0 as MIT licensed, with a roughly 431 MB unpacked package, so AfterMeeting does not vendor or fetch it as part of its own setup. Check Bee's official package instructions again before installing because the release may have changed.
+The app can also use the official project-local npm executable at `.local/bee-cli/node_modules/.bin/bee` or an official `bee` executable already on `PATH`. Bee's current docs describe npm installation, but the 0.7.3 native release was chosen here because it is small and checksum-verifiable. Check Bee's official install instructions before setting up another platform.
 
 The backend accepts only same-origin requests on its exact loopback host. It invokes the fixed read-only commands `bee conversations list --limit 10 --json` and `bee conversations get <positive-number-id> --json`; no shell, login command, arbitrary path, token field, write command, or external LLM is exposed. It keeps transcript data in process memory and sends no request logging to disk. The browser uses no persistent storage. A downloaded brief contains the choices and evidence you approved.
 
@@ -23,9 +25,10 @@ The backend accepts only same-origin requests on its exact loopback host. It inv
 ```text
 python3 -B -m unittest discover -s tests -v
 node --check app.js
+node --test tests/test_frontend.js
 ```
 
-Tests exercise only the checked-in fixture, a fake in-process Bee adapter, and an ephemeral loopback port. They never launch the Bee CLI or contact a Bee account.
+Tests use only the checked-in fixture, test-owned fake CLI child processes, a fake in-process Bee adapter, and an ephemeral loopback port. They never launch the installed Bee CLI or contact a Bee account.
 
 ## Bee data contract reviewed
 
@@ -33,9 +36,9 @@ On October 22, 2026, the official Bee CLI docs and `bee-computer/bee-cli` public
 
 - [Bee CLI reference](https://docs.bee.computer/docs/cli)
 - [Official CLI repository](https://github.com/bee-computer/bee-cli)
-- [Official conversation response tests](https://github.com/bee-computer/bee-cli/blob/main/sources/resources/conversations/index.test.ts)
-- [Official conversation adapter source](https://github.com/bee-computer/bee-cli/blob/main/sources/resources/conversations/index.ts)
-- [Official package manifest](https://github.com/bee-computer/bee-cli/blob/main/package.json)
+- [Official v0.7.3 conversation response tests](https://github.com/bee-computer/bee-cli/blob/v0.7.3/sources/resources/conversations/index.test.ts)
+- [Official v0.7.3 conversation adapter source](https://github.com/bee-computer/bee-cli/blob/v0.7.3/sources/resources/conversations/index.ts)
+- [Official v0.7.3 package manifest](https://github.com/bee-computer/bee-cli/blob/v0.7.3/package.json)
 
 No authenticated CLI call or real-record schema observation has been made in this workspace. The source contract is strict enough to reject unsupported payloads; test fixtures do not replace the pending real-account check.
 

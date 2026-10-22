@@ -144,7 +144,7 @@ function createCandidateCard(candidate, index) {
 
   const evidence = document.createElement("p");
   evidence.className = "evidence-meta";
-  const utterance = candidate.utterance_id ? `Utterance ${candidate.utterance_id}` : `Transcript line ${index + 1}`;
+  const utterance = candidateEvidenceLabel(candidate, index);
   evidence.textContent = `${utterance} · ${formatClock(candidate.spoken_at)} · original Bee wording`;
 
   const keepLabel = document.createElement("label");
@@ -164,6 +164,30 @@ function createCandidateCard(candidate, index) {
 
 function updateCandidateChoice(key, patch) {
   candidateChoices.set(key, { ...candidateChoices.get(key), ...patch });
+}
+
+function candidateEvidenceLabel(candidate, fallbackIndex) {
+  if (candidate.utterance_id) return `Utterance ${candidate.utterance_id}`;
+  const transcriptLine = Number.isInteger(candidate.transcript_line) ? candidate.transcript_line : fallbackIndex + 1;
+  return `Transcript line ${transcriptLine}`;
+}
+
+const MARKDOWN_PUNCTUATION = new Set("!\"#$%'()*+,-./:;=?@[\\]^_`{|}~");
+
+function escapeMarkdownInline(value) {
+  let escaped = "";
+  for (const character of String(value)) {
+    if (character === "&") escaped += "&amp;";
+    else if (character === "<") escaped += "&lt;";
+    else if (character === ">") escaped += "&gt;";
+    else if (MARKDOWN_PUNCTUATION.has(character)) escaped += `\\${character}`;
+    else escaped += character;
+  }
+  return escaped;
+}
+
+function escapedMarkdownLines(value) {
+  return String(value).replace(/\r\n?/g, "\n").split("\n").map(escapeMarkdownInline);
 }
 
 function renderConversation(conversation) {
@@ -215,7 +239,7 @@ async function loadConversation(id, button) {
 function downloadBrief() {
   if (!selectedConversation) return;
   const accepted = selectedConversation.candidates
-    .map((candidate) => ({ candidate, choice: candidateChoices.get(candidate.key) }))
+    .map((candidate, index) => ({ candidate, choice: candidateChoices.get(candidate.key), index }))
     .filter(({ choice }) => choice?.accepted);
   const lines = [
     "# AfterMeeting handoff",
@@ -230,11 +254,17 @@ function downloadBrief() {
     "",
   ];
   if (accepted.length === 0) lines.push("No suggested next steps were selected.", "");
-  for (const { candidate, choice } of accepted) {
+  for (const { candidate, choice, index } of accepted) {
     const action = String(choice.action || "").trim();
-    if (action) lines.push(`- ${action}`);
-    const speaker = candidate.speaker || "speaker not supplied";
-    lines.push(`  - Evidence (${speaker}, ${formatClock(candidate.spoken_at)}): “${candidate.quote}”`);
+    if (action) {
+      const actionLines = escapedMarkdownLines(action);
+      lines.push(`- ${actionLines[0]}`);
+      for (const line of actionLines.slice(1)) lines.push(`  ${line}`);
+    }
+    const speaker = escapeMarkdownInline(String(candidate.speaker || "speaker not supplied").replace(/\r\n?/g, " ").replace(/\n/g, " "));
+    const sourceAnchor = escapeMarkdownInline(candidateEvidenceLabel(candidate, index));
+    lines.push(`  - Evidence (${sourceAnchor}; ${speaker}; ${formatClock(candidate.spoken_at)}):`);
+    for (const line of escapedMarkdownLines(candidate.quote)) lines.push(`    > ${line}`);
   }
   lines.push("", "Capture origin is not attested by the Bee CLI. Confirm the source in the Bee app before using this as Watch-originated demo evidence.", "");
   const blob = new Blob([lines.join("\n")], { type: "text/markdown;charset=utf-8" });

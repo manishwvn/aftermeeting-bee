@@ -4,10 +4,13 @@ import copy
 import http.client
 import json
 import subprocess
+import sys
 import threading
+import time
 import unittest
 from pathlib import Path
 from typing import Any
+from unittest.mock import patch
 
 import app
 
@@ -16,6 +19,23 @@ FIXTURE_PATH = Path(__file__).parent / "fixtures" / "bee-conversation-fixture-on
 FIXTURE_ENVELOPE = json.loads(FIXTURE_PATH.read_text(encoding="utf-8"))
 FIXTURE = FIXTURE_ENVELOPE["conversation"]
 FIXTURE_ID = FIXTURE["id"]
+
+
+def fake_cli_process_factory(
+    script: str,
+    *,
+    calls: list[tuple[list[str], dict[str, Any]]] | None = None,
+    children: list[subprocess.Popen[bytes]] | None = None,
+):
+    def launch(args: list[str], **kwargs: Any) -> subprocess.Popen[bytes]:
+        if calls is not None:
+            calls.append((args, kwargs))
+        child = subprocess.Popen([sys.executable, "-c", script], **kwargs)
+        if children is not None:
+            children.append(child)
+        return child
+
+    return launch
 
 
 class FakeBee:
@@ -64,28 +84,29 @@ class BeeCliTests(unittest.TestCase):
             "next_cursor": None,
             "timezone": "UTC",
         }
-
-        def runner(args: list[str], **kwargs: Any) -> subprocess.CompletedProcess[str]:
-            calls.append((args, kwargs))
-            return subprocess.CompletedProcess(args, 0, json.dumps(payload), "")
-
-        client = app.BeeCLI(executable="fixture-bee", runner=runner)
+        script = f"import sys; sys.stdout.write({json.dumps(payload)!r})"
+        client = app.BeeCLI(
+            executable="fixture-bee",
+            popen_factory=fake_cli_process_factory(script, calls=calls),
+        )
         data = client.list_conversations()
         self.assertEqual(data["conversations"][0]["id"], 2)
         self.assertEqual(calls[0][0], ["fixture-bee", "conversations", "list", "--limit", "10", "--json"])
         self.assertIs(calls[0][1]["shell"], False)
         self.assertIs(calls[0][1]["stdin"], subprocess.DEVNULL)
-        self.assertEqual(calls[0][1]["timeout"], app.CLI_TIMEOUT_SECONDS)
+        self.assertIs(calls[0][1]["stdout"], subprocess.PIPE)
+        self.assertIs(calls[0][1]["stderr"], subprocess.PIPE)
+        self.assertIs(calls[0][1]["close_fds"], True)
 
-    def test_get_uses_selected_numeric_id_and_rejects_injection_before_runner(self) -> None:
+    def test_get_uses_selected_numeric_id_and_rejects_injection_before_process(self) -> None:
         calls: list[list[str]] = []
         raw = json.dumps(FIXTURE_ENVELOPE)
 
-        def runner(args: list[str], **_kwargs: Any) -> subprocess.CompletedProcess[str]:
+        def popen_factory(args: list[str], **kwargs: Any) -> subprocess.Popen[bytes]:
             calls.append(args)
-            return subprocess.CompletedProcess(args, 0, raw, "")
+            return fake_cli_process_factory(f"import sys; sys.stdout.write({raw!r})")(args, **kwargs)
 
-        client = app.BeeCLI(executable="fixture-bee", runner=runner)
+        client = app.BeeCLI(executable="fixture-bee", popen_factory=popen_factory)
         result = client.get_conversation(FIXTURE_ID)
         self.assertEqual(calls[0], ["fixture-bee", "conversations", "get", str(FIXTURE_ID), "--json"])
         self.assertEqual(result["source_response_sha256"], app.hashlib.sha256(raw.encode()).hexdigest())
@@ -95,21 +116,46 @@ class BeeCliTests(unittest.TestCase):
         self.assertEqual(len(calls), 1)
 
     def test_login_error_is_redacted(self) -> None:
-        def runner(args: list[str], **_kwargs: Any) -> subprocess.CompletedProcess[str]:
-            return subprocess.CompletedProcess(args, 1, "", "Not logged in. token=example-secret")
-
+        script = "import sys; sys.stderr.write('Not logged in. token=example-secret'); sys.exit(1)"
         with self.assertRaises(app.AppError) as caught:
-            app.BeeCLI(executable="fixture-bee", runner=runner).list_conversations()
+            app.BeeCLI(executable="fixture-bee", popen_factory=fake_cli_process_factory(script)).list_conversations()
         self.assertEqual(caught.exception.code, "bee_login_required")
         self.assertNotIn("example-secret", caught.exception.message)
 
-    def test_oversize_cli_output_is_rejected(self) -> None:
-        def runner(args: list[str], **_kwargs: Any) -> subprocess.CompletedProcess[str]:
-            return subprocess.CompletedProcess(args, 0, " " * (app.MAX_OUTPUT_BYTES + 1), "")
-
+    def test_oversize_stdout_is_rejected_before_decoding(self) -> None:
+        script = f"import sys; sys.stdout.buffer.write(b'\\xff' * {app.MAX_OUTPUT_BYTES + 1})"
         with self.assertRaises(app.AppError) as caught:
-            app.BeeCLI(executable="fixture-bee", runner=runner).list_conversations()
+            app.BeeCLI(executable="fixture-bee", popen_factory=fake_cli_process_factory(script)).list_conversations()
         self.assertEqual(caught.exception.code, "bee_response_too_large")
+
+    def test_oversize_stderr_is_capped_and_redacted(self) -> None:
+        script = f"import sys; sys.stderr.buffer.write(b'token=secret' * {app.MAX_STDERR_BYTES})"
+        with self.assertRaises(app.AppError) as caught:
+            app.BeeCLI(executable="fixture-bee", popen_factory=fake_cli_process_factory(script)).list_conversations()
+        self.assertEqual(caught.exception.code, "bee_response_too_large")
+        self.assertNotIn("secret", caught.exception.message)
+
+    def test_timeout_terminates_only_the_owned_cli_child(self) -> None:
+        children: list[subprocess.Popen[bytes]] = []
+        sibling = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(30)"])
+        client = app.BeeCLI(
+            executable="fixture-bee",
+            popen_factory=fake_cli_process_factory("import time; time.sleep(30)", children=children),
+        )
+        start = time.monotonic()
+        try:
+            with patch.object(app, "CLI_TIMEOUT_SECONDS", 0.15):
+                with self.assertRaises(app.AppError) as caught:
+                    client.list_conversations()
+            self.assertEqual(caught.exception.code, "bee_cli_timeout")
+            self.assertLess(time.monotonic() - start, 2.0)
+            self.assertEqual(len(children), 1)
+            self.assertIsNotNone(children[0].poll())
+            self.assertIsNone(sibling.poll())
+        finally:
+            if sibling.poll() is None:
+                sibling.terminate()
+            sibling.wait(timeout=2)
 
 
 class ContractAndExtractionTests(unittest.TestCase):
@@ -144,6 +190,19 @@ class ContractAndExtractionTests(unittest.TestCase):
         self.assertEqual(candidates[0]["speaker"], "SPEAKER_1")
         self.assertEqual(candidates[0]["spoken_at"], 1792612800000)
         self.assertEqual(candidates[1]["category"], "proposal language")
+
+    def test_missing_utterance_id_keeps_original_transcript_line(self) -> None:
+        utterances = [
+            {"id": None, "text": "We discussed the timeline.", "speaker": None, "spoken_at": None},
+            {"id": None, "text": "That sounds reasonable.", "speaker": None, "spoken_at": None},
+            {"id": None, "text": "The plan is clearer now.", "speaker": None, "spoken_at": None},
+            {"id": None, "text": "The current scope is clear.", "speaker": None, "spoken_at": None},
+            {"id": None, "text": "I will send the notes.", "speaker": None, "spoken_at": None},
+        ]
+        candidate = app.extract_candidates({"utterances": utterances})[0]
+        self.assertIsNone(candidate["utterance_id"])
+        self.assertEqual(candidate["transcript_line"], 5)
+        self.assertEqual(candidate["quote"], utterances[4]["text"])
 
     def test_response_id_and_schema_fail_closed(self) -> None:
         wrong = copy.deepcopy(FIXTURE_ENVELOPE)
