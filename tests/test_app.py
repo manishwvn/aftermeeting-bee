@@ -224,6 +224,13 @@ class ContractAndExtractionTests(unittest.TestCase):
             app.normalize_conversation_detail(processing, FIXTURE_ID, json.dumps(processing))
         self.assertEqual(caught.exception.code, "bee_conversation_not_ready")
 
+    def test_completed_record_with_no_transcript_does_not_gain_synthetic_actions(self) -> None:
+        empty = copy.deepcopy(FIXTURE_ENVELOPE)
+        empty["conversation"]["transcriptions"] = []
+        normalized = app.normalize_conversation_detail(empty, FIXTURE_ID, json.dumps(empty))
+        self.assertEqual(normalized["utterances"], [])
+        self.assertEqual(app.extract_candidates(normalized), [])
+
 
 class LocalServerTests(unittest.TestCase):
     def setUp(self) -> None:

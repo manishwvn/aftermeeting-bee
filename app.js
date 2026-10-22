@@ -14,27 +14,78 @@ let selectedConversation = null;
 let candidateChoices = new Map();
 let viewRequestVersion = 0;
 let pendingDetailButton = null;
+const FALLBACK_TIME_ZONE = "America/Los_Angeles";
 
 function setMessage(message, tone = "plain") {
   messageNode.textContent = message;
   messageNode.dataset.tone = tone;
 }
 
-function formatDate(timestamp) {
+function isValidTimeZone(timeZone) {
+  if (typeof timeZone !== "string" || !timeZone.trim()) return false;
+  try {
+    new Intl.DateTimeFormat("en-US", { timeZone }).format();
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+function localTimeZone() {
+  try {
+    const timeZone = Intl.DateTimeFormat().resolvedOptions().timeZone;
+    return isValidTimeZone(timeZone) ? timeZone : null;
+  } catch {
+    return null;
+  }
+}
+
+function resolveTimeZone(reportedTimeZone) {
+  if (isValidTimeZone(reportedTimeZone)) return reportedTimeZone;
+  return localTimeZone() || FALLBACK_TIME_ZONE;
+}
+
+function timeZoneNotice(reportedTimeZone) {
+  const displayTimeZone = resolveTimeZone(reportedTimeZone);
+  const localZone = localTimeZone();
+  const displayZoneSource = localZone
+    ? `this computer’s local time zone: ${localZone}`
+    : `fallback time zone: ${displayTimeZone}`;
+  if (isValidTimeZone(reportedTimeZone)) {
+    return `Bee-reported time zone: ${reportedTimeZone} (timestamps shown in this zone)`;
+  }
+  if (typeof reportedTimeZone === "string" && reportedTimeZone.trim()) {
+    return `Bee-reported time zone “${reportedTimeZone}” is unrecognized; timestamps shown in ${displayZoneSource}`;
+  }
+  return `Bee did not report a time zone; timestamps shown in ${displayZoneSource}`;
+}
+
+function deviceTypeNotice(deviceType) {
+  if (typeof deviceType === "string" && deviceType.trim()) {
+    return `Bee-reported device type (unverified): ${deviceType}`;
+  }
+  return "Bee-reported device type: not supplied";
+}
+
+function formatDate(timestamp, timeZone) {
   if (typeof timestamp !== "number" || !Number.isFinite(timestamp)) return "Time not provided";
   const date = new Date(timestamp);
   if (Number.isNaN(date.valueOf())) return "Time not provided";
   return new Intl.DateTimeFormat(undefined, {
     dateStyle: "medium",
     timeStyle: "short",
+    timeZone: resolveTimeZone(timeZone),
   }).format(date);
 }
 
-function formatClock(timestamp) {
+function formatClock(timestamp, timeZone) {
   if (typeof timestamp !== "number" || !Number.isFinite(timestamp)) return "time not supplied";
   const date = new Date(timestamp);
   if (Number.isNaN(date.valueOf())) return "time not supplied";
-  return new Intl.DateTimeFormat(undefined, { timeStyle: "short" }).format(date);
+  return new Intl.DateTimeFormat(undefined, {
+    timeStyle: "short",
+    timeZone: resolveTimeZone(timeZone),
+  }).format(date);
 }
 
 async function postJson(path, body) {
@@ -73,7 +124,7 @@ async function checkLocalApp() {
   }
 }
 
-function makeRecordButton(record) {
+function makeRecordButton(record, timeZone) {
   const button = document.createElement("button");
   button.type = "button";
   button.className = "record-row";
@@ -82,7 +133,7 @@ function makeRecordButton(record) {
   title.textContent = record.summary || `Bee conversation ${record.id}`;
   const meta = document.createElement("span");
   meta.className = "record-date";
-  meta.textContent = `Bee conversation ${record.id} · ${formatDate(record.start_time)} · ${record.state}`;
+  meta.textContent = `Bee conversation ${record.id} · ${formatDate(record.start_time, timeZone)} · ${record.state}`;
   button.append(title, meta);
   button.disabled = !["completed", "processed"].includes(String(record.state).toLowerCase());
   button.setAttribute("aria-label", `${title.textContent}; ${meta.textContent}`);
@@ -100,11 +151,13 @@ async function loadConversations() {
     if (requestVersion !== viewRequestVersion) return;
     const records = [...data.conversations].sort((left, right) => right.start_time - left.start_time);
     recordList.replaceChildren();
-    for (const record of records) recordList.append(makeRecordButton(record));
+    for (const record of records) recordList.append(makeRecordButton(record, data.timezone));
     librarySection.hidden = false;
     reviewSection.hidden = true;
     const count = records.length;
-    setMessage(count ? `${count} Bee conversation${count === 1 ? "" : "s"} ready to choose.` : "Bee returned no recent conversations.");
+    setMessage(count
+      ? `${count} Bee conversation${count === 1 ? "" : "s"} ready to choose. ${timeZoneNotice(data.timezone)}`
+      : "Bee returned no recent conversations.");
     if (count === 0) {
       const empty = document.createElement("p");
       empty.className = "empty-candidates";
@@ -152,7 +205,7 @@ function createCandidateCard(candidate, index) {
   const evidence = document.createElement("p");
   evidence.className = "evidence-meta";
   const utterance = candidateEvidenceLabel(candidate, index);
-  evidence.textContent = `${utterance} · ${formatClock(candidate.spoken_at)} · original Bee wording`;
+  evidence.textContent = `${utterance} · ${formatClock(candidate.spoken_at, selectedConversation?.timezone)} · original Bee wording`;
 
   const keepLabel = document.createElement("label");
   keepLabel.className = "keep-choice";
@@ -197,12 +250,23 @@ function escapedMarkdownLines(value) {
   return String(value).replace(/\r\n?/g, "\n").split("\n").map(escapeMarkdownInline);
 }
 
+function escapeMetadataInline(value) {
+  return escapeMarkdownInline(String(value).replace(/\r\n?/g, " ").replace(/\n/g, " "));
+}
+
 function renderConversation(conversation) {
   selectedConversation = conversation;
   candidateChoices = new Map(conversation.candidates.map((candidate) => [candidate.key, { action: candidate.action, accepted: false }]));
+  const timeZone = resolveTimeZone(conversation.timezone);
   const meta = document.querySelector("#record-meta");
   meta.replaceChildren();
-  for (const value of [`Bee conversation ${conversation.id}`, formatDate(conversation.start_time), conversation.state]) {
+  for (const value of [
+    `Bee conversation ${conversation.id}`,
+    `Recorded: ${formatDate(conversation.start_time, timeZone)}`,
+    `State: ${conversation.state}`,
+    timeZoneNotice(conversation.timezone),
+    deviceTypeNotice(conversation.device_type),
+  ]) {
     const item = document.createElement("span");
     item.textContent = value;
     meta.append(item);
@@ -216,7 +280,7 @@ function renderConversation(conversation) {
     const item = document.createElement("li");
     const speaker = document.createElement("span");
     speaker.className = "transcript-speaker";
-    speaker.textContent = `${utterance.speaker || "Speaker not supplied"} · ${formatClock(utterance.spoken_at)}`;
+    speaker.textContent = `${utterance.speaker || "Speaker not supplied"} · ${formatClock(utterance.spoken_at, timeZone)}`;
     const words = document.createElement("p");
     words.textContent = utterance.text;
     item.append(speaker, words);
@@ -272,6 +336,7 @@ function invalidateViewRequest() {
 
 function downloadBrief() {
   if (!selectedConversation) return;
+  const timeZone = resolveTimeZone(selectedConversation.timezone);
   const accepted = selectedConversation.candidates
     .map((candidate, index) => ({ candidate, choice: candidateChoices.get(candidate.key), index }))
     .filter(({ choice }) => choice?.accepted);
@@ -279,7 +344,10 @@ function downloadBrief() {
     "# AfterMeeting handoff",
     "",
     `Bee conversation: ${selectedConversation.id}`,
-    `Recorded: ${formatDate(selectedConversation.start_time)}`,
+    `Recorded: ${formatDate(selectedConversation.start_time, timeZone)}`,
+    `Time zone: ${escapeMetadataInline(timeZoneNotice(selectedConversation.timezone))}`,
+    `Bee-reported device type (unverified): ${escapeMetadataInline(typeof selectedConversation.device_type === "string" && selectedConversation.device_type.trim() ? selectedConversation.device_type : "not supplied")}`,
+    `Bee-reported state: ${escapeMetadataInline(selectedConversation.state || "not supplied")}`,
     `Source response SHA-256: ${selectedConversation.source_response_sha256}`,
     "",
     "> Transcript wording is Bee's automatic speech recognition output. Check it against the recording before sharing.",
@@ -297,7 +365,7 @@ function downloadBrief() {
     }
     const speaker = escapeMarkdownInline(String(candidate.speaker || "speaker not supplied").replace(/\r\n?/g, " ").replace(/\n/g, " "));
     const sourceAnchor = escapeMarkdownInline(candidateEvidenceLabel(candidate, index));
-    lines.push(`  - Evidence (${sourceAnchor}; ${speaker}; ${formatClock(candidate.spoken_at)}):`);
+    lines.push(`  - Evidence (${sourceAnchor}; ${speaker}; ${formatClock(candidate.spoken_at, timeZone)}):`);
     for (const line of escapedMarkdownLines(candidate.quote)) lines.push(`    > ${line}`);
   }
   lines.push("", "Capture origin is not attested by the Bee CLI. Confirm the source in the Bee app before using this as Watch-originated demo evidence.", "");
